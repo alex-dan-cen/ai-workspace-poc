@@ -1,0 +1,72 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/mcp-settings.json",
+  "description": "Drop this block into your editor's MCP settings (VS Code/Cline: cline_mcp_settings.json, Cursor: ~/.cursor/mcp.json, Claude Code: claude_desktop_config.json). The custom orchestrator runs in parallel alongside the official GitHub, Jira and SonarQube MCP servers.",
+  "mcpServers": {
+    "multi-agent-orchestrator": {
+      "command": "node",
+      "args": ["./mcp-server/dist/index.js"],
+      "transport": "stdio",
+      "env": {
+        "MCP_LOG_LEVEL": "info",
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_PERSONAL_ACCESS_TOKEN}",
+        "ATLASSIAN_SITE_NAME": "${env:ATLASSIAN_SITE_NAME}",
+        "ATLASSIAN_USER_EMAIL": "${env:ATLASSIAN_USER_EMAIL}",
+        "ATLASSIAN_API_TOKEN": "${env:ATLASSIAN_API_TOKEN}",
+        "SONARQUBE_URL": "${env:SONARQUBE_URL}",
+        "SONARQUBE_TOKEN": "${env:SONARQUBE_TOKEN}",
+        "SONARQUBE_PROJECT_KEY": "${env:SONARQUBE_PROJECT_KEY}"
+      },
+      "disabled": false,
+      "autoApprove": ["parse_audit_log", "generate_task_metrics_report", "downstream_list_tools"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "transport": "stdio",
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_PERSONAL_ACCESS_TOKEN}"
+      },
+      "disabled": false
+    },
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "@aashari/mcp-server-atlassian-jira"],
+      "transport": "stdio",
+      "env": {
+        "ATLASSIAN_SITE_NAME": "${env:ATLASSIAN_SITE_NAME}",
+        "ATLASSIAN_USER_EMAIL": "${env:ATLASSIAN_USER_EMAIL}",
+        "ATLASSIAN_API_TOKEN": "${env:ATLASSIAN_API_TOKEN}"
+      },
+      "disabled": false
+    },
+    "sonarqube": {
+      "command": "npx",
+      "args": ["-y", "sonarqube-mcp-server"],
+      "transport": "stdio",
+      "env": {
+        "SONARQUBE_URL": "${env:SONARQUBE_URL}",
+        "SONARQUBE_TOKEN": "${env:SONARQUBE_TOKEN}",
+        "SONARQUBE_PROJECT_KEY": "${env:SONARQUBE_PROJECT_KEY}"
+      },
+      "disabled": false
+    },
+    "confluence": {
+      "command": "npx",
+      "args": ["-y", "@aashari/mcp-server-atlassian-confluence"],
+      "transport": "stdio",
+      "env": {
+        "ATLASSIAN_SITE_NAME": "${env:ATLASSIAN_SITE_NAME}",
+        "ATLASSIAN_USER_EMAIL": "${env:ATLASSIAN_USER_EMAIL}",
+        "ATLASSIAN_API_TOKEN": "${env:ATLASSIAN_API_TOKEN}"
+      },
+      "disabled": false
+    },
+    "chrome": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"],
+      "transport": "stdio",
+      "env": {},
+      "disabled": false
+    }
+  }
+}
