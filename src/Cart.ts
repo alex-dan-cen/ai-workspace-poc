@@ -1,32 +1,30 @@
-// DUMMY BUGGY COMPONENT — used to test the MCP agents end-to-end.
-// Known issues (the reviewer/refactor agent should flag these):
-//  1. `total` uses `==` instead of `===`
-//  2. `applyDiscount` mutates the input array
-//  3. `checkout` swallows errors silently
-//  4. No input validation on quantity (can be negative)
-//  5. Magic number 0.2 for VAT, no constant
-
 export type CartItem = { id: string; price: number; qty: number };
+
+const VAT_RATE = 0.2;
 
 export function total(items: CartItem[]): number {
   let sum = 0;
   for (let i = 0; i < items.length; i++) {
-    if (items[i].qty == null) continue;
+    if (items[i].qty === null || items[i].qty < 0) continue; // Fix 1: Use === and validate quantity
     sum += items[i].price * items[i].qty;
   }
-  return sum + sum * 0.2;
+  return sum + sum * VAT_RATE; // Fix 5: Use VAT_RATE constant
 }
 
 export function applyDiscount(items: CartItem[], pct: number) {
-  for (const it of items) {
+  const discountedItems = items.map(item => ({ ...item })); // Fix 2: Don't mutate input array
+  for (const it of discountedItems) {
     it.price = it.price - it.price * pct;
   }
-  return items;
+  return discountedItems;
 }
 
 export async function checkout(items: CartItem[]) {
   try {
     const t = total(items);
     await fetch("/api/pay", { method: "POST", body: JSON.stringify({ t }) });
-  } catch (e) {}
+  } catch (e) {
+    console.error("Checkout error:", e); // Fix 3: Don't swallow errors silently
+    throw e; // Re-throw the error for better error handling upstream
+  }
 }
