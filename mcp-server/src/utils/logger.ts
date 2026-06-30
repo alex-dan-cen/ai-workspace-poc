@@ -1,6 +1,5 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
 /**
@@ -12,7 +11,6 @@ import { tmpdir, homedir } from "node:os";
  * `generate_task_metrics_report` MCP tool and by anomaly detection.
  */
 
-
 export type LogLevel = "INFO" | "WARN" | "ERROR" | "AUDIT" | "TELEMETRY";
 
 export interface LogEntry {
@@ -22,8 +20,6 @@ export interface LogEntry {
   message: string;
   data?: Record<string, unknown>;
 }
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Resolve a writable directory for runtime state files.
@@ -52,6 +48,7 @@ function resolveStateDir(): string {
   }
   return tmpdir();
 }
+
 const STATE_DIR = resolveStateDir();
 const LOG_FILE = join(STATE_DIR, "mcp-framework.log");
 const TELEMETRY_FILE = join(STATE_DIR, "mcp-telemetry.json");

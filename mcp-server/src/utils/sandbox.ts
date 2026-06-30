@@ -55,6 +55,21 @@ export class Sandbox {
       throw new Error(`projectRoot does not exist: ${projectRoot}`);
     }
 
+    // Auto-init a git repo if the projectRoot isn't already one.
+    if (!existsSync(resolve(projectRoot, ".git"))) {
+      Logger.warn("Sandbox", `projectRoot is not a git repo, initializing`, { projectRoot });
+      try {
+        Sandbox.runSafe(`git init -b main`, { cwd: projectRoot, scopeRoot: projectRoot });
+        Sandbox.runSafe(`git add -A`, { cwd: projectRoot, scopeRoot: projectRoot });
+        Sandbox.runSafe(
+          `git -c user.email=mcp@local -c user.name=mcp commit --allow-empty -m "chore: mcp baseline"`,
+          { cwd: projectRoot, scopeRoot: projectRoot },
+        );
+      } catch (err) {
+        Logger.warn("Sandbox", `git init failed`, { error: (err as Error).message });
+      }
+    }
+
     if (existsSync(worktreePath)) {
       Logger.audit("Sandbox", `Worktree already exists, reusing`, { worktreePath, branch });
       return { ticketId: safeTicket, branch, worktreePath, projectRoot };

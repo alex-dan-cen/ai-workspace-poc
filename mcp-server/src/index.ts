@@ -26,14 +26,37 @@ import { agentDeveloper, agentReviewer, agentRefactor, runSquad } from "./agents
  *    - parse_audit_log                                          *
  * ────────────────────────────────────────────────────────────── */
 
+/** Accept JSON-string, comma-string, or single string and coerce to string[]. */
+const stringArray = z.preprocess((v) => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!s) return [];
+    if (s.startsWith("[")) {
+      try { return JSON.parse(s); } catch { /* fall through */ }
+    }
+    return s.split(",").map((x) => x.trim()).filter(Boolean);
+  }
+  return v;
+}, z.array(z.string()));
+
 const PipelineInput = z.object({
   projectRoot: z.string().min(1).describe("Absolute path to the developer's project root."),
   ticketId: z.string().min(1).describe("Jira/Linear/issue ID used to scope the worktree branch."),
-  targetFiles: z.array(z.string()).default([]).describe("Files inside projectRoot to distill into context."),
+  targetFiles: stringArray.default([]).describe("Files inside projectRoot to distill into context."),
   rawPrompt: z.string().min(1).describe("Raw user instruction. Auto-steering rules will be prepended."),
   model: z.string().optional().describe("Model identifier used for billing (default claude-3-5-sonnet)."),
   downstreamServers: z
-    .array(z.enum(["github", "jira", "sonarqube"]))
+    .preprocess((v) => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === "string") {
+        const s = v.trim();
+        if (!s) return [];
+        if (s.startsWith("[")) { try { return JSON.parse(s); } catch {} }
+        return s.split(",").map((x) => x.trim()).filter(Boolean);
+      }
+      return v;
+    }, z.array(z.enum(["github", "jira", "sonarqube"])))
     .default([])
     .describe("Which downstream MCP servers the editor should fan out to in parallel."),
 });
@@ -56,7 +79,7 @@ const ParseLogInput = z.object({
 const AgentInput = z.object({
   projectRoot: z.string().min(1),
   ticketId: z.string().min(1),
-  targetFiles: z.array(z.string()).default([]),
+  targetFiles: stringArray.default([]),
   rawPrompt: z.string().default(""),
   prNumber: z.number().optional(),
   owner: z.string().optional(),
@@ -64,7 +87,15 @@ const AgentInput = z.object({
 });
 
 const SquadInput = AgentInput.extend({
-  agents: z.array(z.enum(["developer", "reviewer", "refactor"])).min(1),
+  agents: z.preprocess((v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (s.startsWith("[")) { try { return JSON.parse(s); } catch {} }
+      return s.split(",").map((x) => x.trim()).filter(Boolean);
+    }
+    return v;
+  }, z.array(z.enum(["developer", "reviewer", "refactor"])).min(1)),
 });
 
 const DownstreamCallInput = z.object({

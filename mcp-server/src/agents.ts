@@ -44,6 +44,23 @@ async function safeCall(
   }
 }
 
+
+async function safeCallAny(
+  id: DownstreamId,
+  tools: string[],
+  argsByTool: (tool: string) => Record<string, unknown>,
+  sessionId: string,
+) {
+  let lastErr = "no candidates";
+  for (const t of tools) {
+    const r = await safeCall(id, t, argsByTool(t), sessionId);
+    if (r.ok) return { ...r, tool: t };
+    lastErr = r.error;
+  }
+  return { ok: false as const, error: lastErr, tool: tools[tools.length - 1] ?? "" };
+}
+/**
+ * 
 /**
  * Best-effort: pull a plain-text prompt and a list of file paths out of a
  * Jira ticket payload. Different Jira MCP servers shape responses slightly
@@ -96,8 +113,16 @@ export async function agentDeveloper(input: {
   const steps: AgentReport["steps"] = [];
 
   // 1. Pull ticket from Jira (always — it's also our fallback source for prompt+files)
-  const jira = await safeCall("jira", "get_issue", { issueKey: input.ticketId }, input.sessionId);
-  steps.push(step("developer", "jira.get_issue", jira.ok,
+  // 1. Pull ticket from Jira (always — it's also our fallback source for prompt+files).
+  // Different Jira MCP servers expose this under different tool names, so try the
+  // common variants and also pass the ticket id under multiple common arg keys.
+  const jira = await safeCallAny(
+    "jira",
+    ["jira_get_issue", "get_issue", "get-issue", "issue.get"],
+    () => ({ issueKey: input.ticketId, issueIdOrKey: input.ticketId, key: input.ticketId }),
+    input.sessionId,
+  );
+  steps.push(step("developer", `jira.${jira.tool}`, jira.ok,
     jira.ok ? `Loaded ${input.ticketId}` : `Jira error: ${jira.error}`,
     jira.ok ? jira.data : undefined,
   ));
@@ -168,27 +193,35 @@ export async function agentReviewer(input: {
   const steps: AgentReport["steps"] = [];
 
   // Pull PR diff + Sonar issues IN PARALLEL
+  const sonarConfigured = Boolean(process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN);
   const [pr, sonar] = await Promise.all([
     input.prNumber && input.owner && input.repo
       ? safeCall("github", "get_pull_request_files",
-          { owner: input.owner, repo: input.repo, pullNumber: input.prNumber }, input.sessionId)
+          { owner: input.owner, repo: input.repo, pull_number: input.prNumber }, input.sessionId)
       : Promise.resolve({ ok: false as const, error: "missing prNumber/owner/repo" }),
-    safeCall("sonarqube", "search_issues",
-      { projectKey: process.env.SONARQUBE_PROJECT_KEY ?? "" }, input.sessionId),
+    sonarConfigured
+      ? safeCall("sonarqube", "search_issues",
+          { projectKey: process.env.SONARQUBE_PROJECT_KEY ?? "" }, input.sessionId)
+      : Promise.resolve({ ok: true as const, data: { skipped: "sonarqube not configured" } }),
   ]);
 
   steps.push(step("reviewer", "github.get_pull_request_files", pr.ok,
     pr.ok ? `Loaded PR #${input.prNumber}` : `GitHub error: ${pr.error}`,
     pr.ok ? pr.data : undefined));
   steps.push(step("reviewer", "sonarqube.search_issues", sonar.ok,
-    sonar.ok ? `Loaded Sonar issues` : `Sonar error: ${sonar.error}`,
+    sonar.ok
+      ? (sonarConfigured ? `Loaded Sonar issues` : `Skipped (sonarqube not configured)`)
+      : `Sonar error: ${sonar.error}`,
     sonar.ok ? sonar.data : undefined));
 
   const plan = [
     `# Code Review for ${input.ticketId}`,
     `Sandbox: ${sandbox.worktreePath}`,
     ``,
-    `Combine the GitHub diff with SonarQube quality-gate issues above and post review comments via github.create_pull_request_review.`,
+   `Combine the GitHub diff with SonarQube quality-gate issues above and post the review via`,
+    `github.create_pull_request_review with **event: "COMMENT"** (NOT "APPROVE" — GitHub forbids`,
+    `approving your own PR, and "COMMENT" works for self-authored PRs too).`,
+    ``,
     `Auto-steering rules to enforce while reviewing:`,
     BehaviorTracker.applySteering(root, "review for correctness, security and style"),
   ].join("\n");
@@ -214,15 +247,20 @@ export async function agentRefactor(input: {
   const prompt = input.rawPrompt?.trim() || `Refactor for clarity, preserve public API.`;
 
   // Distill + Sonar in parallel
+  const sonarConfigured = Boolean(process.env.SONARQUBE_URL && process.env.SONARQUBE_TOKEN);
   const [distilled, sonar] = await Promise.all([
     Promise.resolve(Distiller.distillMany(files.map((f) => join(sandbox.worktreePath, f)))),
-    safeCall("sonarqube", "search_issues",
-      { projectKey: process.env.SONARQUBE_PROJECT_KEY ?? "", files }, input.sessionId),
+    sonarConfigured
+      ? safeCall("sonarqube", "search_issues",
+          { projectKey: process.env.SONARQUBE_PROJECT_KEY ?? "", files }, input.sessionId)
+      : Promise.resolve({ ok: true as const, data: { skipped: "sonarqube not configured" } }),
   ]);
 
   steps.push(step("refactor", "distiller", true, `Distilled ${distilled.length} files`));
   steps.push(step("refactor", "sonarqube.search_issues", sonar.ok,
-    sonar.ok ? `Quality issues fetched` : `Sonar error: ${sonar.error}`));
+    sonar.ok
+      ? (sonarConfigured ? `Quality issues fetched` : `Skipped (sonarqube not configured)`)
+      : `Sonar error: ${sonar.error}`));
 
   const plan = [
     `# Refactor plan for ${input.ticketId}`,

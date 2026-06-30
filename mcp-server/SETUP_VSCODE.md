@@ -45,15 +45,31 @@ pwd   # copiază această cale, o folosești mai jos
       "command": "node",
       "args": ["/CALEA/TA/ABSOLUTĂ/mcp-server/dist/index.js"],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx",
-        "ATLASSIAN_API_TOKEN": "xxx",
-        "ATLASSIAN_EMAIL": "tu@firma.com",
-        "ATLASSIAN_DOMAIN": "firma.atlassian.net",
-        "SONAR_TOKEN": "sqp_xxx",
-        "SONAR_HOST_URL": "https://sonarcloud.io"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "PUNE_AICI_GHP_TOKEN",
+        "ATLASSIAN_SITE_NAME": "PUNE_AICI_SUBDOMAIN",
+        "ATLASSIAN_USER_EMAIL": "PUNE_AICI_EMAIL",
+        "ATLASSIAN_API_TOKEN": "PUNE_AICI_JIRA_TOKEN"
       },
       "disabled": false,
       "autoApprove": []
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "PUNE_AICI_GHP_TOKEN"
+      },
+      "disabled": false
+    },
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "@aashari/mcp-server-atlassian-jira"],
+      "env": {
+        "ATLASSIAN_SITE_NAME": "PUNE_AICI_SUBDOMAIN",
+        "ATLASSIAN_USER_EMAIL": "PUNE_AICI_EMAIL",
+        "ATLASSIAN_API_TOKEN": "PUNE_AICI_JIRA_TOKEN"
+      },
+      "disabled": false
     }
   }
 }
