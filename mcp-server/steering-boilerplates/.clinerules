@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────
+#  Corporate steering boilerplate — picked up automatically by
+#  the Multi-Agent MCP Orchestrator (BehaviorTracker.ingestClinerules).
+#  Lines starting with '#' are comments and are ignored.
+#  Each non-comment line becomes a permanent behavior rule
+#  auto-injected into every future prompt for this project.
+# ─────────────────────────────────────────────────────────────
+
+# === TypeScript ===
+Enable strict TypeScript: no implicit any, no unchecked indexed access.
+Never use the `any` type. Prefer `unknown` + narrowing, or generics.
+Public functions must declare explicit return types.
+
+# === Styling ===
+Use Tailwind utility classes only. Do not write custom CSS modules unless explicitly asked.
+Reference design tokens via semantic CSS variables (bg-background, text-foreground, etc.).
+Never hardcode hex colors in components.
+
+# === Architecture ===
+Keep components under 200 lines; extract hooks and subcomponents.
+Business logic belongs in `/lib` or hooks, not in JSX components.
+All side effects must be wrapped in `useEffect` with explicit dependencies.
+
+# === Git / Commits ===
+Use Conventional Commits: feat:, fix:, chore:, refactor:, docs:, test:.
+Subject line max 72 characters, imperative mood.
+Reference the Jira/issue ID in the commit body.
+
+# === Testing ===
+Every new public function ships with a unit test.
+Prefer table-driven tests over duplicated `it()` blocks.
+
+# === Security ===
+Never commit secrets. Read tokens from process.env.
+Sanitize all external input before forwarding to shell or SQL.
