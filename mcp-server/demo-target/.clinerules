@@ -1,6 +1,0 @@
-# Steering for demo-target
-- Use strict equality (===)
-- Never mutate function arguments
-- Always handle errors with logging
-- Extract magic numbers into named constants
-- Validate all numeric inputs (>= 0)
