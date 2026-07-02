@@ -38,13 +38,33 @@ async function safeCall(
 ) {
   try {
     const data = await MCPDownstream.call(id, tool, args, sessionId);
+    const r = data as {
+      isError?: boolean;
+      content?: Array<{ text?: string }>;
+      metadata?: { errorType?: string; statusCode?: number; errorDetails?: { message?: string } };
+    } | null;
+    const errText = r?.content?.map((c) => c.text ?? "").join("").trim() ?? "";
+    const isErr =
+      r?.isError === true ||
+      Boolean(r?.metadata?.errorType) ||
+      (typeof r?.metadata?.statusCode === "number" && r!.metadata!.statusCode! >= 400) ||
+      /^error[:\s]/i.test(errText);
+    if (isErr) {
+      const msg = errText || r?.metadata?.errorDetails?.message || "MCP tool returned an error";
+      return { ok: false as const, error: msg };
+    }
     return { ok: true as const, data };
   } catch (err) {
     return { ok: false as const, error: (err as Error).message };
   }
 }
 
-
+/**
+ * Try a list of candidate tool names against a downstream server and return
+ * the first one that succeeds. Different MCP server implementations expose
+ * different tool names for the same operation (e.g. Jira: `get_issue` vs
+ * `jira_get_issue` vs `get-issue`).
+ */
 async function safeCallAny(
   id: DownstreamId,
   tools: string[],
@@ -59,28 +79,44 @@ async function safeCallAny(
   }
   return { ok: false as const, error: lastErr, tool: tools[tools.length - 1] ?? "" };
 }
-/**
- * 
+
 /**
  * Best-effort: pull a plain-text prompt and a list of file paths out of a
  * Jira ticket payload. Different Jira MCP servers shape responses slightly
  * differently, so we look in the most common spots and degrade gracefully.
  */
+/** Walk an Atlassian Document Format node and concatenate all text runs. */
+function adfToPlainText(node: unknown): string {
+  if (!node) return "";
+  if (typeof node === "string") return node;
+  const n = node as { type?: string; text?: string; content?: unknown[] };
+  const kids = Array.isArray(n.content) ? n.content.map(adfToPlainText).join("") : "";
+  const self = typeof n.text === "string" ? n.text : "";
+  const block = n.type && ["paragraph", "heading", "listItem", "bulletList", "orderedList"].includes(n.type);
+  return self + kids + (block ? "\n" : "");
+}
+
 function extractFromJira(jiraData: unknown): { prompt: string; files: string[] } {
   try {
-    const text = JSON.stringify(jiraData);
-    // ATTACHED FILES: pull anything that looks like a src path
-    const fileMatches = text.match(/\b(?:src|app|lib|packages|components|pages|routes|tests?)\/[A-Za-z0-9_\-./]+\.[A-Za-z]{1,6}\b/g) ?? [];
-    const files = Array.from(new Set(fileMatches)).slice(0, 20);
-
-    // PROMPT: prefer fields.summary + fields.description, fall back to raw text.
-    const j = jiraData as { fields?: { summary?: string; description?: unknown } } | null;
+    // MCP passthrough servers wrap the real payload as { content: [{ type: "text", text: "..." }] }
+    // where `text` is a JSON string (we asked for outputFormat: json). Unwrap it.
+    let payload: unknown = jiraData;
+    const wrap = jiraData as { content?: Array<{ text?: string }> } | null;
+    if (wrap?.content?.length) {
+      const joined = wrap.content.map((c) => c.text ?? "").join("");
+      try { payload = JSON.parse(joined); } catch { payload = joined; }
+    }
+    // PROMPT: summary + description as plain text (ADF → text if needed).
+    const j = payload as { fields?: { summary?: string; description?: unknown } } | null;
     const summary = j?.fields?.summary ?? "";
+    const rawDesc = j?.fields?.description;
     const description =
-      typeof j?.fields?.description === "string"
-        ? j!.fields!.description
-        : JSON.stringify(j?.fields?.description ?? "");
-    const prompt = [summary, description].filter(Boolean).join("\n\n") || text.slice(0, 4000);
+      typeof rawDesc === "string" ? rawDesc : adfToPlainText(rawDesc).trim();
+    const prompt = [summary, description].filter(Boolean).join("\n\n") || (typeof payload === "string" ? payload : JSON.stringify(payload)).slice(0, 4000);
+
+    // FILES: only pull paths mentioned in the plain-text prompt (not in ADF metadata).
+    const fileMatches = prompt.match(/\b(?:src|app|lib|packages|components|pages|routes|tests?)\/[A-Za-z0-9_\-./]+\.[A-Za-z]{1,6}\b/g) ?? [];
+    const files = Array.from(new Set(fileMatches)).slice(0, 20);
     return { prompt, files };
   } catch {
     return { prompt: "", files: [] };
@@ -112,14 +148,17 @@ export async function agentDeveloper(input: {
   const sandbox = Sandbox.createWorktree(root, input.ticketId);
   const steps: AgentReport["steps"] = [];
 
-  // 1. Pull ticket from Jira (always — it's also our fallback source for prompt+files)
-  // 1. Pull ticket from Jira (always — it's also our fallback source for prompt+files).
-  // Different Jira MCP servers expose this under different tool names, so try the
-  // common variants and also pass the ticket id under multiple common arg keys.
+  // 1. Pull ticket from Jira. This server exposes a REST passthrough
+  // (jira_get / jira_post / ...), NOT semantic tools. We hit the v3 issue
+  // endpoint directly and ask for JSON so downstream extraction works.
   const jira = await safeCallAny(
     "jira",
-    ["jira_get_issue", "get_issue", "get-issue", "issue.get"],
-    () => ({ issueKey: input.ticketId, issueIdOrKey: input.ticketId, key: input.ticketId }),
+    ["jira_get"],
+    () => ({
+      path: `/rest/api/3/issue/${input.ticketId}`,
+      queryParams: { fields: "summary,description,attachment,issuetype,status" },
+      outputFormat: "json",
+    }),
     input.sessionId,
   );
   steps.push(step("developer", `jira.${jira.tool}`, jira.ok,
@@ -128,16 +167,30 @@ export async function agentDeveloper(input: {
   ));
 
   // 2. RESOLVE inputs the caller didn't supply.
+  //    When Jira gave us a real prompt we TRUST it and ignore caller-supplied
+  //    targetFiles (Cline auto-injects them from workspace scan; for a "new
+  //    component" ticket this points at the wrong file and derails the agent).
   const fromJira = jira.ok ? extractFromJira(jira.data) : { prompt: "", files: [] };
+  const jiraHasPrompt = Boolean(fromJira.prompt.trim());
   const effectivePrompt =
-    (input.rawPrompt && input.rawPrompt.trim()) ||
     fromJira.prompt ||
+    (input.rawPrompt && input.rawPrompt.trim()) ||
     `Implement the acceptance criteria of ticket ${input.ticketId}.`;
-  const effectiveFiles =
-    (input.targetFiles && input.targetFiles.length > 0 && input.targetFiles) ||
-    (fromJira.files.length > 0 ? fromJira.files : gitChangedFiles(sandbox.worktreePath));
+  let filesSource: "jira" | "user" | "git-diff" | "none";
+  let effectiveFiles: string[];
+  if (fromJira.files.length > 0) {
+    effectiveFiles = fromJira.files; filesSource = "jira";
+  } else if (jiraHasPrompt) {
+    // Jira spoke, but named no files → this is a NEW feature. Do not fall
+    // back to caller/git diff; let the plan tell the coder to create files.
+    effectiveFiles = []; filesSource = "none";
+  } else if (input.targetFiles && input.targetFiles.length > 0) {
+    effectiveFiles = input.targetFiles; filesSource = "user";
+  } else {
+    effectiveFiles = gitChangedFiles(sandbox.worktreePath); filesSource = "git-diff";
+  }
   steps.push(step("developer", "resolve.inputs", true,
-    `prompt: ${input.rawPrompt ? "user" : fromJira.prompt ? "jira" : "default"} · files: ${input.targetFiles?.length ? "user" : fromJira.files.length ? "jira" : "git-diff"} (${effectiveFiles.length})`));
+    `prompt: ${fromJira.prompt ? "jira" : input.rawPrompt ? "user" : "default"} · files: ${filesSource} (${effectiveFiles.length})`));
 
   // 3. Pull repo context from GitHub in parallel with distilling local files
   const [ghRepo, distilled] = await Promise.all([
@@ -159,7 +212,10 @@ export async function agentDeveloper(input: {
     `## Context`,
     `- Sandbox worktree: ${sandbox.worktreePath}`,
     `- Branch: ${sandbox.branch}`,
-    `- Files in scope: ${effectiveFiles.join(", ") || "(none — first run, no diff yet)"}`,
+    `- Files in scope: ${effectiveFiles.join(", ") || "(none — NEW feature, create the file(s) required by the ticket)"}`,
+    ``,
+    `## Ticket (from Jira)`,
+    effectivePrompt,
     ``,
     `## Steering boundaries`,
     steered,
@@ -218,7 +274,7 @@ export async function agentReviewer(input: {
     `# Code Review for ${input.ticketId}`,
     `Sandbox: ${sandbox.worktreePath}`,
     ``,
-   `Combine the GitHub diff with SonarQube quality-gate issues above and post the review via`,
+    `Combine the GitHub diff with SonarQube quality-gate issues above and post the review via`,
     `github.create_pull_request_review with **event: "COMMENT"** (NOT "APPROVE" — GitHub forbids`,
     `approving your own PR, and "COMMENT" works for self-authored PRs too).`,
     ``,
