@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { Logger, Telemetry } from "./utils/logger.js";
 import { Sandbox } from "./utils/sandbox.js";
@@ -20,6 +20,7 @@ export interface AgentReport {
   agent: string;
   ticketId: string;
   sandboxPath: string;
+  instructions?: string[];
   steps: Array<{ tool: string; ok: boolean; summary: string; data?: unknown }>;
   plan?: string;
   patchPath?: string;
@@ -136,6 +137,22 @@ function gitChangedFiles(worktreePath: string): string[] {
   }
 }
 
+function ingestProjectClinerules(projectRoot: string, steps: AgentReport["steps"], agent: string): void {
+  const clinerulesPath = join(projectRoot, ".clinerules");
+  if (!existsSync(clinerulesPath)) {
+    steps.push(step(agent, "steering.clinerules", true, "No .clinerules file found"));
+    return;
+  }
+
+  const content = readFileSync(clinerulesPath, "utf-8");
+  BehaviorTracker.ingestClinerules(projectRoot, content);
+  const ruleCount = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#")).length;
+  steps.push(step(agent, "steering.clinerules", true, `Loaded ${ruleCount} .clinerules rules`));
+}
+
 /* ──────────────────────────── DEVELOPER AGENT ──────────────────────────── */
 export async function agentDeveloper(input: {
   projectRoot: string;
@@ -203,14 +220,31 @@ export async function agentDeveloper(input: {
     `Distilled ${distilled.length} files (truncated: ${distilled.filter((d) => d.truncated).length})`));
 
   // 4. Auto-steering (always pulls .clinerules + learned rules from this project)
+  ingestProjectClinerules(root, steps, "developer");
   const steered = BehaviorTracker.applySteering(root, effectivePrompt);
+
+  const executionInstructions = [
+    `Use only the returned sandboxPath: ${sandbox.worktreePath}`,
+    `Do not read, create, edit, git add, commit, or push files from projectRoot: ${root}`,
+    `The sandbox worktree is already on branch ${sandbox.branch}; do not run git checkout -b from another terminal directory.`,
+    `Run every shell command as: cd "${sandbox.worktreePath}" && <command>`,
+    `Before pushing, verify the sandbox branch has changes with: cd "${sandbox.worktreePath}" && git diff --stat main...HEAD`,
+  ];
 
   // 5. Build a deterministic implementation plan
   const plan = [
     `# Implementation plan for ${input.ticketId}`,
     ``,
+    `## CRITICAL EXECUTION CONTRACT`,
+    `This plan is for the host editor/LLM that will apply the implementation after this MCP tool returns.`,
+    ``,
+    ...executionInstructions.map((instruction, index) => `${index + 1}. ${instruction}`),
+    `6. If a proposed file path starts with ${root}, STOP: that is the source project, not the implementation worktree.`,
+    `7. If \`git diff --stat main...HEAD\` is empty, DO NOT push and DO NOT create a pull request.`,
+    ``,
     `## Context`,
     `- Sandbox worktree: ${sandbox.worktreePath}`,
+    `- Source project root: ${root}`,
     `- Branch: ${sandbox.branch}`,
     `- Files in scope: ${effectiveFiles.join(", ") || "(none — NEW feature, create the file(s) required by the ticket)"}`,
     ``,
@@ -222,9 +256,11 @@ export async function agentDeveloper(input: {
     ``,
     `## Suggested next steps`,
     `1. Read distilled context above.`,
-    `2. Apply changes ONLY inside ${sandbox.worktreePath}.`,
-    `3. Commit with Conventional Commits referencing ${input.ticketId}.`,
-    `4. Open PR via github MCP create_pull_request.`,
+    `2. Change directory first: \`cd "${sandbox.worktreePath}"\`.`,
+    `3. Apply changes ONLY inside the current sandbox worktree.`,
+    `4. Run the project's validation command(s) from the sandbox.`,
+    `5. Commit with Conventional Commits referencing ${input.ticketId}.`,
+    `6. Push ${sandbox.branch} from the sandbox and open PR via github MCP create_pull_request.`,
   ].join("\n");
 
   const planPath = join(sandbox.worktreePath, `.mcp-plan-${input.ticketId}.md`);
@@ -232,7 +268,7 @@ export async function agentDeveloper(input: {
   writeFileSync(planPath, plan, "utf-8");
   steps.push(step("developer", "fs.writePlan", true, `Plan written: ${planPath}`));
 
-  return { agent: "developer", ticketId: input.ticketId, sandboxPath: sandbox.worktreePath, steps, plan, patchPath: planPath };
+  return { agent: "developer", ticketId: input.ticketId, sandboxPath: sandbox.worktreePath, instructions: executionInstructions, steps, plan, patchPath: planPath };
 }
 
 /* ──────────────────────────── CODE REVIEWER AGENT ──────────────────────────── */
@@ -242,6 +278,7 @@ export async function agentReviewer(input: {
   prNumber?: number;
   owner?: string;
   repo?: string;
+  autoPost?: boolean;
   sessionId: string;
 }): Promise<AgentReport> {
   const root = resolve(input.projectRoot);
@@ -270,6 +307,10 @@ export async function agentReviewer(input: {
       : `Sonar error: ${sonar.error}`,
     sonar.ok ? sonar.data : undefined));
 
+  // Pull .clinerules so the posted review references the project's own rules.
+  ingestProjectClinerules(root, steps, "reviewer");
+  const steering = BehaviorTracker.applySteering(root, "review for correctness, security and style");
+
   const plan = [
     `# Code Review for ${input.ticketId}`,
     `Sandbox: ${sandbox.worktreePath}`,
@@ -279,10 +320,67 @@ export async function agentReviewer(input: {
     `approving your own PR, and "COMMENT" works for self-authored PRs too).`,
     ``,
     `Auto-steering rules to enforce while reviewing:`,
-    BehaviorTracker.applySteering(root, "review for correctness, security and style"),
+    steering,
   ].join("\n");
 
+  // ── AUTO-POST the review comment on the PR ──
+  // Default ON. Set autoPost:false to skip and only return the plan.
+  const shouldAutoPost =
+    input.autoPost !== false && pr.ok && input.prNumber && input.owner && input.repo;
+  if (shouldAutoPost) {
+    const diffFiles = extractPrFileList(pr.data);
+    const body = [
+      `## 🤖 Automated code review for ${input.ticketId}`,
+      ``,
+      `Generated by \`multi-agent-orchestrator.agent_reviewer\`.`,
+      ``,
+      `### Files changed (${diffFiles.length})`,
+      diffFiles.length ? diffFiles.map((f) => `- \`${f}\``).join("\n") : `- (none)`,
+      ``,
+      `### Steering rules enforced`,
+      "```",
+      steering,
+      "```",
+      ``,
+      sonarConfigured
+        ? `### SonarQube quality gate\nSee inline data in the orchestrator step above.`
+        : `### SonarQube\nSkipped — not configured. Set \`SONARQUBE_URL\`, \`SONARQUBE_TOKEN\`, \`SONARQUBE_PROJECT_KEY\` to enable.`,
+      ``,
+      `> This comment was posted automatically. Reject or reply inline to disagree.`,
+    ].join("\n");
+
+    const post = await safeCallAny(
+      "github",
+      ["create_pull_request_review", "create_pending_pull_request_review"],
+      () => ({
+        owner: input.owner!,
+        repo: input.repo!,
+        pull_number: input.prNumber!,
+        pullNumber: input.prNumber!,
+        event: "COMMENT",
+        body,
+      }),
+      input.sessionId,
+    );
+    steps.push(step("reviewer", `github.${post.tool}`, post.ok,
+      post.ok ? `Posted review comment on PR #${input.prNumber}` : `Post failed: ${post.error}`));
+  } else if (input.autoPost === false) {
+    steps.push(step("reviewer", "github.create_pull_request_review", true, "Skipped (autoPost:false)"));
+  }
+
   return { agent: "reviewer", ticketId: input.ticketId, sandboxPath: sandbox.worktreePath, steps, plan };
+}
+
+/** Extract file-name list from the GitHub MCP wrapped response. */
+function extractPrFileList(data: unknown): string[] {
+  try {
+    const wrap = data as { content?: Array<{ text?: string }> } | null;
+    const joined = wrap?.content?.map((c) => c.text ?? "").join("") ?? "";
+    const parsed = JSON.parse(joined) as Array<{ filename?: string }>;
+    return parsed.map((p) => p.filename ?? "").filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 /* ──────────────────────────── REFACTOR AGENT ──────────────────────────── */

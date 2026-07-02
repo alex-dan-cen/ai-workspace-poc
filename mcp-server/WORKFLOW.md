@@ -130,12 +130,29 @@ Ce primești înapoi:
 - `distilledContext` → conținutul `Cart.ts` distilat + `.clinerules` aplicate
   ca steering.
 
-Cline va aplica patch-ul în sandbox. Tu copiezi modificările în
-`demo-target/src/Cart.ts`, sau lucrezi direct în worktree:
+**Regulă importantă pentru Cline:** MCP-ul creează sandbox-ul și planul, dar
+Cline este cel care execută editările după aceea. Aprobă doar acțiuni care
+ating `sandboxPath`. Respinge orice comandă sau editare care pornește din
+`projectRoot` sau din folderul MCP serverului.
+
+Exemple corecte:
+- edit file: `.../sandbox-SCRUM-1/src/Cart.ts`
+- shell: `cd ".../sandbox-SCRUM-1" && npm run typecheck`
+- commit: `cd ".../sandbox-SCRUM-1" && git add ... && git commit ...`
+
+Exemple de respins:
+- edit file: `.../demo-target/src/Cart.ts`
+- edit file: `.../shop-ui/src/App.tsx`
+- shell pornit din `.../ai-mcp-poc` fără `cd "sandboxPath"`
+- `git checkout -b feature/SCRUM-1` rulat în alt folder decât sandbox-ul
+
+Lucrezi direct în worktree:
 
 ```bash
 cd /Users/acenusa1/Downloads/ai-mcp-poc/mcp-server/sandbox-SCRUM-1
 # edit src/Cart.ts după plan
+npm run typecheck
+git diff --stat main...HEAD
 git add src/Cart.ts
 git commit -m "fix(SCRUM-1): cart bugs"
 git push -u origin feature/SCRUM-1

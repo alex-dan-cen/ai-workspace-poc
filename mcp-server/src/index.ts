@@ -84,6 +84,7 @@ const AgentInput = z.object({
   prNumber: z.number().optional(),
   owner: z.string().optional(),
   repo: z.string().optional(),
+  autoPost: z.boolean().optional(),
 });
 
 const SquadInput = AgentInput.extend({
@@ -346,7 +347,7 @@ const TOOL_DEFS = [
   {
     name: "agent_developer",
     description:
-      "Developer agent: reads the Jira ticket, pulls repo context from GitHub, distills local files, applies auto-steering, writes an implementation plan inside the sandbox worktree. Only projectRoot + ticketId are required — targetFiles and rawPrompt are auto-derived from the Jira ticket (with .clinerules always applied).",
+      "Developer agent: reads the Jira ticket, creates/reuses a sandbox git worktree, loads .clinerules, and writes an implementation plan. After this tool returns, all edits, validation, git add, commit, push, and PR work MUST happen only inside the returned sandboxPath, never inside projectRoot or the MCP server folder. Only projectRoot + ticketId are required — targetFiles and rawPrompt are auto-derived from the Jira ticket.",
     inputSchema: {
       type: "object",
       properties: {
@@ -361,7 +362,7 @@ const TOOL_DEFS = [
   {
     name: "agent_reviewer",
     description:
-      "Code-review agent: pulls PR diff from GitHub and SonarQube issues IN PARALLEL, then returns a review plan to post via github.create_pull_request_review.",
+      "Code-review agent: pulls PR diff from GitHub and SonarQube issues IN PARALLEL, then AUTO-POSTS a review comment on the PR (event: COMMENT) that references the project's .clinerules. Pass autoPost:false to only return the plan without posting.",
     inputSchema: {
       type: "object",
       properties: {
@@ -370,6 +371,7 @@ const TOOL_DEFS = [
         prNumber: { type: "number" },
         owner: { type: "string" },
         repo: { type: "string" },
+        autoPost: { type: "boolean", description: "Default true. Set false to skip posting and only return the plan." },
       },
       required: ["projectRoot", "ticketId"],
     },
